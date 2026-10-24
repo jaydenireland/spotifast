@@ -1320,6 +1320,18 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                 }));
             }
             "shortcuts" => app.dialog = Some(Dialog::Shortcuts),
+            "command-palette" => {
+                let songs: Vec<Track> = (0..8).map(track).collect();
+                app.command_palette = Some(crate::model::CommandPalette {
+                    query: "Bonobo".into(),
+                    committed: "Bonobo".into(),
+                    serial: 1,
+                    answered: 1,
+                    songs: Loadable::Loaded(songs),
+                    highlighted: 1,
+                    ..Default::default()
+                });
+            }
             "premium" => app.dialog = Some(Dialog::PremiumNeeded),
             "edit" => {
                 app.dialog = Some(Dialog::EditPlaylist {

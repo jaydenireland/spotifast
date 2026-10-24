@@ -45,7 +45,7 @@ const REMOTE_FRESH: Duration = Duration::from_secs(60);
 /// How often the open Friend activity panel asks for news.
 const FRIENDS_POLL: Duration = Duration::from_secs(15);
 const DEVICES_FRESH: Duration = Duration::from_secs(12);
-const SEARCH_DEBOUNCE: Duration = Duration::from_millis(280);
+pub(crate) const SEARCH_DEBOUNCE: Duration = Duration::from_millis(280);
 /// How long a suspend or the end of the session waits for pending file
 /// writes. fastframe-power holds the system back for 1.5 s before a
 /// suspend (3 s at the end of a session), so a longer wait would only
@@ -557,6 +557,8 @@ pub struct App {
     accent_pending: HashSet<String>,
 
     pub dialog: Option<Dialog>,
+    /// The Cmd+K palette while it is open.
+    pub command_palette: Option<CommandPalette>,
     cover_request: u64,
     cover_uploads: HashMap<String, u64>,
     /// Successful uploads stay visible while Spotify propagates the new image.
@@ -1196,6 +1198,7 @@ impl App {
             art_palettes: HashMap::new(),
             accent_pending: HashSet::new(),
             dialog: None,
+            command_palette: None,
             cover_request: 0,
             cover_uploads: HashMap::new(),
             uploaded_covers: Default::default(),
@@ -3898,6 +3901,7 @@ impl App {
                 ctx.request_repaint_after(SEARCH_DEBOUNCE - typed.elapsed());
             }
         }
+        self.tick_command_palette(ctx);
 
         if self.last_eviction.elapsed() > Duration::from_secs(20) {
             self.last_eviction = now;
@@ -6272,6 +6276,54 @@ impl App {
         });
     }
 
+    /// Starts the command palette's search once typing has paused.
+    fn tick_command_palette(&mut self, ctx: &egui::Context) {
+        let Some(palette) = &mut self.command_palette else {
+            return;
+        };
+        let Some(typed) = palette.typed_at else {
+            return;
+        };
+        if typed.elapsed() >= SEARCH_DEBOUNCE {
+            palette.typed_at = None;
+            let query = palette.query.trim().to_string();
+            self.search_palette_songs(query);
+        } else {
+            ctx.request_repaint_after(SEARCH_DEBOUNCE - typed.elapsed());
+        }
+    }
+
+    /// Searches songs for the command palette. The shown songs stay until
+    /// the answer comes, so the list never blinks empty between two queries;
+    /// an empty query clears it and cancels the search in flight.
+    fn search_palette_songs(&mut self, query: String) {
+        let Some(palette) = &mut self.command_palette else {
+            return;
+        };
+        if query == palette.committed && !palette.songs.needs_load() {
+            return;
+        }
+        palette.serial += 1;
+        palette.committed = query.clone();
+        palette.highlighted = 0;
+        if query.is_empty() {
+            palette.songs = Loadable::NotLoaded;
+        } else if palette.songs.get().is_none() {
+            palette.songs = Loadable::Loading;
+        }
+        self.backend.api(ApiRequest::SearchSongs {
+            query,
+            serial: palette.serial,
+        });
+    }
+
+    /// Whether the command palette is waiting for Spotify's answer.
+    pub fn command_palette_searching(&self) -> bool {
+        self.command_palette.as_ref().is_some_and(|palette| {
+            !palette.committed.is_empty() && palette.serial != palette.answered
+        })
+    }
+
     /// A search the debounce started while the user may still be typing.
     fn run_typed_search(&mut self, query: String) {
         let serial = self.search.serial;
@@ -7884,6 +7936,25 @@ impl App {
                     }
                     Err(error) => self.search_failed(&gettext(self.locale, "Playlists"), error),
                 }
+            }
+            ApiResponse::SearchSongs {
+                query,
+                serial,
+                result,
+            } => {
+                let locale = self.locale;
+                let Some(palette) = &mut self.command_palette else {
+                    return;
+                };
+                if serial != palette.serial || query != palette.committed {
+                    return;
+                }
+                palette.songs = match result {
+                    Ok(songs) => Loadable::Loaded(songs),
+                    Err(error) => Loadable::Failed(friendly_api_error(locale, &error)),
+                };
+                palette.answered = serial;
+                palette.highlighted = 0;
             }
             ApiResponse::Search {
                 query,
@@ -11260,6 +11331,40 @@ impl App {
                 if !matches!(self.page(), Page::Search) {
                     self.open(Page::Search);
                 }
+            }
+            Action::ToggleCommandPalette => {
+                if self.command_palette.is_some() {
+                    self.command_palette = None;
+                } else {
+                    self.show_devices = false;
+                    self.command_palette = Some(CommandPalette {
+                        focus_requested: true,
+                        ..CommandPalette::default()
+                    });
+                }
+            }
+            Action::CloseCommandPalette => self.command_palette = None,
+            Action::PlayCommandPaletteSong(index) => {
+                let song = self
+                    .command_palette
+                    .as_ref()
+                    .and_then(|palette| palette.songs.get())
+                    .and_then(|songs| songs.get(index))
+                    .cloned();
+                self.command_palette = None;
+                let Some(track) = song else {
+                    return;
+                };
+                // The player bar shows the song at once, from this copy,
+                // while Spotify starts it.
+                if let Some(id) = util::uri_id(&track.uri) {
+                    self.remember_track_recording(&track);
+                    self.track_cache.insert(id.to_string(), track.clone());
+                }
+                // A palette song plays on its own, and Spotify continues
+                // with what follows it (autoplay), as a search result does.
+                let request = PlayRequest::tracks(vec![track.uri]).starting_at_index(0);
+                self.play_request(request, false);
             }
             Action::LoadMore(page) => self.load_more(page),
             Action::LoadWindow { page, position } => self.load_window(page, position),
@@ -20080,6 +20185,117 @@ mod tests {
         assert_eq!(app.tray_wait, None, "a panel shows the item");
         app.check_tray_wait(started + TRAY_WAIT, false);
         assert!(!app.wants_show);
+        app.backend.shutdown();
+    }
+
+    fn palette_song(id: &str, name: &str) -> Track {
+        Track {
+            id: Some(id.into()),
+            uri: format!("spotify:track:{id}"),
+            name: name.into(),
+            ..Track::default()
+        }
+    }
+
+    /// The command palette searches songs once typing pauses, keeps the
+    /// songs it shows until the next answer, drops an answer to an earlier
+    /// query, and plays the chosen song as it closes.
+    #[test]
+    fn the_command_palette_searches_after_a_pause_and_plays_the_chosen_song() {
+        let ctx = egui::Context::default();
+        let mut app = test_app("command-palette");
+        app.apply(Action::ToggleCommandPalette, &ctx);
+        let palette = app.command_palette.as_mut().expect("the palette opens");
+        assert!(palette.focus_requested, "the field takes focus on opening");
+
+        // Typing starts nothing until the pause.
+        palette.query = "rose".into();
+        palette.typed_at = Some(Instant::now());
+        app.tick_command_palette(&ctx);
+        let palette = app.command_palette.as_ref().unwrap();
+        assert_eq!(
+            palette.committed, "",
+            "a query is not searched while it is typed"
+        );
+        app.command_palette.as_mut().unwrap().typed_at = Some(Instant::now() - SEARCH_DEBOUNCE * 2);
+        app.tick_command_palette(&ctx);
+        let palette = app.command_palette.as_ref().unwrap();
+        assert_eq!(palette.committed, "rose");
+        assert!(palette.songs.is_loading());
+        assert!(app.command_palette_searching());
+        let first = palette.serial;
+
+        app.handle_api(ApiResponse::SearchSongs {
+            query: "rose".into(),
+            serial: first,
+            result: Ok(vec![
+                palette_song("a", "Rosewood"),
+                palette_song("b", "Roses"),
+            ]),
+        });
+        let palette = app.command_palette.as_ref().unwrap();
+        assert_eq!(palette.songs.get().map(Vec::len), Some(2));
+        assert!(!app.command_palette_searching());
+
+        // A longer query keeps the songs on screen while Spotify answers,
+        // and an answer to the earlier query is dropped.
+        let palette = app.command_palette.as_mut().unwrap();
+        palette.query = "rosew".into();
+        palette.typed_at = Some(Instant::now() - SEARCH_DEBOUNCE * 2);
+        app.tick_command_palette(&ctx);
+        let palette = app.command_palette.as_ref().unwrap();
+        assert_eq!(
+            palette.songs.get().map(Vec::len),
+            Some(2),
+            "the list does not blink empty"
+        );
+        assert!(app.command_palette_searching());
+        let second = palette.serial;
+        assert_ne!(first, second);
+        app.handle_api(ApiResponse::SearchSongs {
+            query: "rose".into(),
+            serial: first,
+            result: Ok(vec![palette_song("stale", "Stale")]),
+        });
+        let palette = app.command_palette.as_ref().unwrap();
+        assert_eq!(
+            palette.songs.get().map(Vec::len),
+            Some(2),
+            "a stale answer is dropped"
+        );
+        app.handle_api(ApiResponse::SearchSongs {
+            query: "rosew".into(),
+            serial: second,
+            result: Ok(vec![
+                palette_song("a", "Rosewood"),
+                palette_song("c", "Rosewater"),
+            ]),
+        });
+        assert!(!app.command_palette_searching());
+
+        // Down moves the choice, held within the list; Enter plays it and
+        // closes the palette, and the player bar shows the song at once.
+        let palette = app.command_palette.as_mut().unwrap();
+        palette.move_choice(1);
+        palette.move_choice(5);
+        assert_eq!(palette.highlighted, 1);
+        palette.move_choice(-3);
+        assert_eq!(palette.highlighted, 0);
+        palette.move_choice(1);
+        let chosen = palette.highlighted;
+        app.apply(Action::PlayCommandPaletteSong(chosen), &ctx);
+        assert!(app.command_palette.is_none(), "playing closes the palette");
+        assert_eq!(
+            app.now_playing().map(|now| now.uri),
+            Some("spotify:track:c".into()),
+            "the chosen song is the playing song"
+        );
+
+        // Esc closes without playing; the shortcut opens afresh.
+        app.apply(Action::ToggleCommandPalette, &ctx);
+        assert_eq!(app.command_palette.as_ref().unwrap().query, "");
+        app.apply(Action::CloseCommandPalette, &ctx);
+        assert!(app.command_palette.is_none());
         app.backend.shutdown();
     }
 

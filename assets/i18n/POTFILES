@@ -16,6 +16,7 @@ src/theme.rs
 src/ui/artist.rs
 src/ui/collection.rs
 src/ui/devices.rs
+src/ui/command_palette.rs
 src/ui/dialogs.rs
 src/ui/home.rs
 src/ui/keys.rs

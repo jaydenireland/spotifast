@@ -752,6 +752,40 @@ pub struct SearchState {
     pub focus_requested: bool,
 }
 
+/// The command palette: a search box over the page, opened with Cmd+K or
+/// Ctrl+K, that finds songs and plays the chosen one from the keyboard.
+#[derive(Default)]
+pub struct CommandPalette {
+    pub query: String,
+    /// The query the shown songs answer.
+    pub committed: String,
+    /// Counts searches, so an answer to an earlier query is dropped.
+    pub serial: u64,
+    /// The search whose answer `songs` holds; behind `serial` while one is
+    /// in flight.
+    pub answered: u64,
+    pub songs: Loadable<Vec<Track>>,
+    /// The keyboard's choice among the songs; Enter plays it.
+    pub highlighted: usize,
+    /// When the query last changed; the search starts after a pause.
+    pub typed_at: Option<Instant>,
+    /// The field takes focus on the frame the palette opens.
+    pub focus_requested: bool,
+}
+
+impl CommandPalette {
+    /// Moves the highlight by `steps` rows, held within the songs shown.
+    pub fn move_choice(&mut self, steps: isize) {
+        let count = self.songs.get().map_or(0, Vec::len);
+        if count == 0 {
+            self.highlighted = 0;
+            return;
+        }
+        let last = (count - 1) as isize;
+        self.highlighted = (self.highlighted as isize + steps).clamp(0, last) as usize;
+    }
+}
+
 #[derive(Default)]
 pub struct PlaylistPage {
     pub generation: u64,
@@ -1219,6 +1253,12 @@ pub enum Action {
     ForgetSearch(String),
     SetSearchFilter(SearchFilter),
     FocusSearch,
+    /// Open or close the command palette (Cmd+K or Ctrl+K).
+    ToggleCommandPalette,
+    CloseCommandPalette,
+    /// Play the song at this position among the palette's results, and
+    /// close the palette.
+    PlayCommandPaletteSong(usize),
     LoadMore(Page),
     LoadWindow {
         page: Page,

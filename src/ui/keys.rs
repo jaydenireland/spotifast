@@ -16,6 +16,7 @@ pub(super) const SIDEBAR_SHORTCUT: &str = platform_shortcut("Ctrl+B", "Cmd+B");
 pub(super) const QUIT_SHORTCUT: &str = platform_shortcut("Ctrl+Q", "Cmd+Q");
 pub(super) const WINAMP_SHORTCUT: &str = platform_shortcut("Ctrl+M", "Cmd+Shift+M");
 pub(super) const MILKDROP_SHORTCUT: &str = platform_shortcut("Ctrl+Shift+K", "Cmd+Shift+K");
+pub(super) const PALETTE_SHORTCUT: &str = platform_shortcut("Ctrl+K", "Cmd+K");
 
 pub fn handle(app: &mut App, ctx: &egui::Context) {
     let typing = ctx.memory(|memory| memory.focused().is_some());
@@ -88,6 +89,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             Key::K,
             Action::ToggleWinampMilkdrop,
         );
+        // After MilkDrop's Shift shortcut, which it would otherwise take.
+        key(Modifiers::COMMAND, Key::K, Action::ToggleCommandPalette);
         key(
             Modifiers::COMMAND,
             Key::Slash,
@@ -178,6 +181,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     if ctx.input(|input| input.key_pressed(Key::Escape)) {
         if app.dialog.is_some() {
             app.actions.push(Action::CloseDialog);
+        } else if app.command_palette.is_some() {
+            app.actions.push(Action::CloseCommandPalette);
         } else if app.show_devices {
             app.show_devices = false;
         } else if app.lyrics_fullscreen.is_some() {
@@ -249,6 +254,10 @@ pub fn shortcuts(locale: Locale) -> Vec<(Cow<'static, str>, Cow<'static, str>)> 
                 gettext(locale, "Ctrl+F  or  /")
             },
             gettext(locale, "Search"),
+        ),
+        (
+            keys(PALETTE_SHORTCUT),
+            gettext(locale, "Find a song and play it"),
         ),
         (
             keys(SIDEBAR_SHORTCUT),
@@ -658,6 +667,23 @@ mod tests {
             format!("{:?}", [Action::FocusSearch]),
             "the search shortcut is not taken by plain F"
         );
+        assert_eq!(
+            press(&mut app, Key::K, command),
+            format!("{:?}", [Action::ToggleCommandPalette]),
+            "the palette shortcut opens the command palette"
+        );
+        assert_eq!(
+            press(&mut app, Key::K, shift),
+            format!("{:?}", [Action::ToggleWinampMilkdrop]),
+            "the MilkDrop shortcut is not taken by the palette"
+        );
+        app.command_palette = Some(crate::model::CommandPalette::default());
+        assert_eq!(
+            press(&mut app, Key::Escape, Modifiers::NONE),
+            format!("{:?}", [Action::CloseCommandPalette]),
+            "Esc closes the command palette"
+        );
+        app.command_palette = None;
         assert_eq!(
             press(&mut app, Key::F, Modifiers::NONE),
             format!("{:?}", [Action::SetLyricsFullscreen(true)]),
