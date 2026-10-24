@@ -314,8 +314,8 @@ for its own text.
 `Ctrl+K` (`Cmd+K` on macOS) opens a search box over the page. Type part of
 a name and it lists matching songs, artists and albums from Spotify, and
 your own playlists from your library. Move between them with `↑` and `↓`
-and press `Enter` to play the chosen one: a song on its own, an artist,
-album or playlist from its start. `Esc` or a click outside closes it.
+and press `Enter`: a song plays on its own, and an artist, album or
+playlist opens its page. `Esc` or a click outside closes it.
 
 ## Controlling it from the command line
 

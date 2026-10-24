@@ -1327,9 +1327,10 @@ pub enum Action {
     /// Open or close the command palette (Cmd+K or Ctrl+K).
     ToggleCommandPalette,
     CloseCommandPalette,
-    /// Play the entry at this position among the palette's rows, and close
-    /// the palette.
-    PlayCommandPaletteEntry(usize),
+    /// Take the entry at this position among the palette's rows, and close
+    /// the palette: a song plays, an artist, album or playlist opens its
+    /// page.
+    ChooseCommandPaletteEntry(usize),
     LoadMore(Page),
     LoadWindow {
         page: Page,

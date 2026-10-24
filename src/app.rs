@@ -11374,7 +11374,7 @@ impl App {
                 }
             }
             Action::CloseCommandPalette => self.command_palette = None,
-            Action::PlayCommandPaletteEntry(index) => {
+            Action::ChooseCommandPaletteEntry(index) => {
                 let entry = self
                     .command_palette
                     .as_ref()
@@ -11394,16 +11394,13 @@ impl App {
                         let request = PlayRequest::tracks(vec![track.uri]).starting_at_index(0);
                         self.play_request(request, false);
                     }
-                    // An artist, album or playlist plays from its start, as
-                    // its card's play button would.
-                    Some(entry) => self.apply(
-                        Action::PlayContext {
-                            uri: entry.uri().to_string(),
-                            offset_uri: None,
-                            offset_index: None,
-                        },
-                        ctx,
-                    ),
+                    // An artist, album or playlist opens its page, as its
+                    // card would; the page offers play.
+                    Some(PaletteEntry::Artist(artist)) => self.open(Page::Artist(artist.id)),
+                    Some(PaletteEntry::Album(album)) => self.open(Page::Album(album.id)),
+                    Some(PaletteEntry::Playlist(playlist)) => {
+                        self.open(Page::Playlist(playlist.id));
+                    }
                     None => {}
                 }
             }
@@ -20395,7 +20392,7 @@ mod tests {
         assert_eq!(palette.highlighted, 0);
         palette.move_choice(1);
         let chosen = palette.highlighted;
-        app.apply(Action::PlayCommandPaletteEntry(chosen), &ctx);
+        app.apply(Action::ChooseCommandPaletteEntry(chosen), &ctx);
         assert!(app.command_palette.is_none(), "playing closes the palette");
         assert_eq!(
             app.now_playing().map(|now| now.uri),
@@ -20403,7 +20400,7 @@ mod tests {
             "the chosen song is the playing song"
         );
 
-        // An album plays as a context from its start.
+        // An album opens its page rather than playing.
         app.apply(Action::ToggleCommandPalette, &ctx);
         let palette = app.command_palette.as_mut().unwrap();
         palette.query = "rose".into();
@@ -20415,12 +20412,17 @@ mod tests {
             serial,
             result: Ok(palette_found(vec![palette_song("a", "Rosewood")])),
         });
-        app.apply(Action::PlayCommandPaletteEntry(2), &ctx);
+        app.apply(Action::ChooseCommandPaletteEntry(2), &ctx);
         assert!(app.command_palette.is_none());
         assert_eq!(
-            app.playing_context_uri().as_deref(),
-            Some("spotify:album:alb"),
-            "the chosen album is the playing context"
+            app.page(),
+            &Page::Album("alb".into()),
+            "the chosen album's page opens"
+        );
+        assert_eq!(
+            app.now_playing().map(|now| now.uri),
+            Some("spotify:track:c".into()),
+            "the song keeps playing"
         );
 
         // Esc closes without playing; the shortcut opens afresh.

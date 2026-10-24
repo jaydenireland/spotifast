@@ -1,6 +1,6 @@
 //! The command palette: Cmd+K (Ctrl+K elsewhere) opens a search box over
 //! the page that finds songs, artists, albums and the listener's own
-//! playlists, and plays the chosen one from the keyboard.
+//! playlists. A chosen song plays; anything else opens its page.
 
 use std::time::Instant;
 
@@ -45,7 +45,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
     if enter {
         if !entries.is_empty() {
             app.actions
-                .push(Action::PlayCommandPaletteEntry(palette.highlighted));
+                .push(Action::ChooseCommandPaletteEntry(palette.highlighted));
         } else if palette.typed_at.is_some() {
             // Enter before the pause ends searches at once.
             palette.typed_at = Some(Instant::now() - crate::app::SEARCH_DEBOUNCE);
@@ -364,7 +364,7 @@ fn rows(
             colours.secondary,
         );
         if response.clicked() {
-            app.actions.push(Action::PlayCommandPaletteEntry(index));
+            app.actions.push(Action::ChooseCommandPaletteEntry(index));
         }
     }
     // The pointer chooses as the arrow keys do, so Enter plays the row
@@ -399,7 +399,7 @@ fn footer(ui: &mut egui::Ui, colours: &theme::Palette, locale: Locale, busy: boo
         theme::text(
             ui,
             // Translators: Keep the key names. Translate the words between them.
-            gettext(locale, "↑ ↓ choose   ↵ play   Esc close"),
+            gettext(locale, "↑ ↓ choose   ↵ play or open   Esc close"),
             theme::regular(12.0),
             colours.dim,
         );
