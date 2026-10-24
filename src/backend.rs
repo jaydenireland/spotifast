@@ -278,9 +278,9 @@ pub enum ApiRequest {
         query: String,
         serial: u64,
     },
-    /// The songs matching a query, for the command palette. An empty query
-    /// only cancels the search before it.
-    SearchSongs {
+    /// The songs, artists and albums matching a query, for the command
+    /// palette. An empty query only cancels the search before it.
+    SearchPalette {
         query: String,
         serial: u64,
     },
@@ -544,10 +544,10 @@ pub enum ApiResponse {
         serial: u64,
         result: ApiResult<Page<Playlist>>,
     },
-    SearchSongs {
+    SearchPalette {
         query: String,
         serial: u64,
-        result: ApiResult<Vec<Track>>,
+        result: ApiResult<SearchResults>,
     },
     /// The URI of the best match for a [`ApiRequest::PlaySearch`], or `None`
     /// when nothing matched.
@@ -1846,7 +1846,7 @@ struct Worker {
     search_tasks: Vec<tokio::task::AbortHandle>,
     /// The command palette's search in flight, if any; a newer query or an
     /// empty one aborts it.
-    song_search_task: Option<tokio::task::AbortHandle>,
+    palette_search_task: Option<tokio::task::AbortHandle>,
     /// A user changed engine-affecting settings while the current connection
     /// attempt was in flight. Its result is stale and must not be installed.
     engine_restart_pending: bool,
@@ -1959,7 +1959,7 @@ impl Worker {
             prerelease_waiting: None,
             engine_busy: false,
             search_tasks: Vec::new(),
-            song_search_task: None,
+            palette_search_task: None,
             engine_restart_pending: false,
             signed_in: false,
             premium: None,
@@ -2419,8 +2419,8 @@ impl Worker {
                     }
                 }
                 Command::Api(ApiRequest::Search { query, serial }) => self.search(query, serial),
-                Command::Api(ApiRequest::SearchSongs { query, serial }) => {
-                    self.search_songs(query, serial);
+                Command::Api(ApiRequest::SearchPalette { query, serial }) => {
+                    self.search_palette(query, serial);
                 }
                 Command::Api(request) => {
                     self.dispatch(request);
@@ -4756,14 +4756,14 @@ impl Worker {
 
     /// The command palette's search. Each query replaces the one before it,
     /// so a slow answer to an earlier query never arrives after a newer one.
-    fn search_songs(&mut self, query: String, serial: u64) {
-        if let Some(task) = self.song_search_task.take() {
+    fn search_palette(&mut self, query: String, serial: u64) {
+        if let Some(task) = self.palette_search_task.take() {
             task.abort();
         }
         if query.is_empty() {
             return;
         }
-        self.song_search_task = Some(self.dispatch(ApiRequest::SearchSongs { query, serial }));
+        self.palette_search_task = Some(self.dispatch(ApiRequest::SearchPalette { query, serial }));
     }
 
     /// Cancel requests on sign-out and report completion under their original generation.
@@ -4904,7 +4904,7 @@ fn operation_for(api: &ApiGateway, request: &ApiRequest) -> Operation {
         ApiRequest::HiddenSongs { .. } | ApiRequest::SetHiddenInPlaylist { .. } => {
             Operation::UserData
         }
-        ApiRequest::SearchCatalogue { .. } | ApiRequest::SearchSongs { .. } => {
+        ApiRequest::SearchCatalogue { .. } | ApiRequest::SearchPalette { .. } => {
             Operation::CatalogSearch
         }
         ApiRequest::Search { .. } => Operation::PlaylistSearch,
@@ -5633,9 +5633,8 @@ async fn handle(
             query,
             serial,
         },
-        ApiRequest::SearchSongs { query, serial } => ApiResponse::SearchSongs {
-            result: routed!(search(&query, &["track"]))
-                .map(|results| results.tracks.map(|page| page.items).unwrap_or_default()),
+        ApiRequest::SearchPalette { query, serial } => ApiResponse::SearchPalette {
+            result: routed!(search(&query, &["track", "artist", "album"])),
             query,
             serial,
         },
@@ -8752,7 +8751,7 @@ mod authorization_tests {
             assert_eq!(
                 operation_for(
                     &worker.api,
-                    &ApiRequest::SearchSongs {
+                    &ApiRequest::SearchPalette {
                         query: "q".into(),
                         serial: 1,
                     }

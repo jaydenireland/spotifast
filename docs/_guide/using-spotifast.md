@@ -294,7 +294,7 @@ Winamp skins do not yet have equivalent accessibility coverage.
 | `Q` | Queue panel, or the queue column in full screen |
 | `F` | Enter or leave full screen lyrics |
 | `Ctrl+F` or `/` | Search |
-| `Ctrl+K` | Find a song and play it |
+| `Ctrl+K` | Find something and play it |
 | `Ctrl+B` | Show or hide the sidebar |
 | `Alt+←` / `Alt+→` | Back or forward |
 | `Ctrl+H` / `Ctrl+L` | Home / Liked Songs |
@@ -312,8 +312,10 @@ On macOS, `Cmd` replaces `Ctrl`. A focused text field keeps its usual keys
 for its own text.
 
 `Ctrl+K` (`Cmd+K` on macOS) opens a search box over the page. Type part of
-a song's name, move between the matches with `↑` and `↓`, and press `Enter`
-to play the chosen one. `Esc` or a click outside closes it.
+a name and it lists matching songs, artists and albums from Spotify, and
+your own playlists from your library. Move between them with `↑` and `↓`
+and press `Enter` to play the chosen one: a song on its own, an artist,
+album or playlist from its start. `Esc` or a click outside closes it.
 
 ## Controlling it from the command line
 

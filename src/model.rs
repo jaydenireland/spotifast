@@ -752,20 +752,53 @@ pub struct SearchState {
     pub focus_requested: bool,
 }
 
+/// One row of the command palette.
+#[derive(Clone, Debug)]
+pub enum PaletteEntry {
+    /// Boxed: a song carries far more than the other kinds.
+    Song(Box<Track>),
+    Artist(Artist),
+    Album(Album),
+    Playlist(Playlist),
+}
+
+impl PaletteEntry {
+    pub fn uri(&self) -> &str {
+        match self {
+            PaletteEntry::Song(track) => &track.uri,
+            PaletteEntry::Artist(artist) => &artist.uri,
+            PaletteEntry::Album(album) => &album.uri,
+            PaletteEntry::Playlist(playlist) => &playlist.uri,
+        }
+    }
+}
+
+/// How many of each kind the palette lists: the songs lead, the rest
+/// follow in the order the Search page uses.
+pub const PALETTE_SONGS: usize = 5;
+pub const PALETTE_ARTISTS: usize = 2;
+pub const PALETTE_ALBUMS: usize = 3;
+pub const PALETTE_PLAYLISTS: usize = 3;
+
 /// The command palette: a search box over the page, opened with Cmd+K or
-/// Ctrl+K, that finds songs and plays the chosen one from the keyboard.
+/// Ctrl+K, that finds songs, artists, albums and the listener's own
+/// playlists, and plays the chosen one from the keyboard.
 #[derive(Default)]
 pub struct CommandPalette {
     pub query: String,
-    /// The query the shown songs answer.
+    /// The query the shown entries answer.
     pub committed: String,
     /// Counts searches, so an answer to an earlier query is dropped.
     pub serial: u64,
-    /// The search whose answer `songs` holds; behind `serial` while one is
+    /// The search whose answer `found` holds; behind `serial` while one is
     /// in flight.
     pub answered: u64,
-    pub songs: Loadable<Vec<Track>>,
-    /// The keyboard's choice among the songs; Enter plays it.
+    /// What Spotify found: songs, artists and albums.
+    pub found: Loadable<SearchResults>,
+    /// The listener's own playlists whose names hold the query, matched
+    /// here from the library the moment the query commits.
+    pub playlists: Vec<Playlist>,
+    /// The keyboard's choice among the entries; Enter plays it.
     pub highlighted: usize,
     /// When the query last changed; the search starts after a pause.
     pub typed_at: Option<Instant>,
@@ -774,9 +807,47 @@ pub struct CommandPalette {
 }
 
 impl CommandPalette {
-    /// Moves the highlight by `steps` rows, held within the songs shown.
+    /// The rows, in the order shown: songs, artists, albums, then the
+    /// listener's own playlists.
+    pub fn entries(&self) -> Vec<PaletteEntry> {
+        let mut entries = Vec::new();
+        if let Some(found) = self.found.get() {
+            fn items<T: Clone>(page: &Option<crate::api::models::Page<T>>, limit: usize) -> Vec<T> {
+                page.iter()
+                    .flat_map(|page| page.items.iter())
+                    .take(limit)
+                    .cloned()
+                    .collect()
+            }
+            entries.extend(
+                items(&found.tracks, PALETTE_SONGS)
+                    .into_iter()
+                    .map(|track| PaletteEntry::Song(Box::new(track))),
+            );
+            entries.extend(
+                items(&found.artists, PALETTE_ARTISTS)
+                    .into_iter()
+                    .map(PaletteEntry::Artist),
+            );
+            entries.extend(
+                items(&found.albums, PALETTE_ALBUMS)
+                    .into_iter()
+                    .map(PaletteEntry::Album),
+            );
+        }
+        entries.extend(
+            self.playlists
+                .iter()
+                .take(PALETTE_PLAYLISTS)
+                .cloned()
+                .map(PaletteEntry::Playlist),
+        );
+        entries
+    }
+
+    /// Moves the highlight by `steps` rows, held within the entries shown.
     pub fn move_choice(&mut self, steps: isize) {
-        let count = self.songs.get().map_or(0, Vec::len);
+        let count = self.entries().len();
         if count == 0 {
             self.highlighted = 0;
             return;
@@ -1256,9 +1327,9 @@ pub enum Action {
     /// Open or close the command palette (Cmd+K or Ctrl+K).
     ToggleCommandPalette,
     CloseCommandPalette,
-    /// Play the song at this position among the palette's results, and
-    /// close the palette.
-    PlayCommandPaletteSong(usize),
+    /// Play the entry at this position among the palette's rows, and close
+    /// the palette.
+    PlayCommandPaletteEntry(usize),
     LoadMore(Page),
     LoadWindow {
         page: Page,

@@ -6287,34 +6287,64 @@ impl App {
         if typed.elapsed() >= SEARCH_DEBOUNCE {
             palette.typed_at = None;
             let query = palette.query.trim().to_string();
-            self.search_palette_songs(query);
+            self.search_palette(query);
         } else {
             ctx.request_repaint_after(SEARCH_DEBOUNCE - typed.elapsed());
         }
     }
 
-    /// Searches songs for the command palette. The shown songs stay until
-    /// the answer comes, so the list never blinks empty between two queries;
-    /// an empty query clears it and cancels the search in flight.
-    fn search_palette_songs(&mut self, query: String) {
+    /// Searches for the command palette: the listener's own playlists are
+    /// matched here at once, and Spotify is asked for songs, artists and
+    /// albums. What is shown stays until the answer comes, so the list
+    /// never blinks empty between two queries; an empty query clears it
+    /// and cancels the search in flight.
+    fn search_palette(&mut self, query: String) {
+        let playlists = self.own_playlists_named(&query);
         let Some(palette) = &mut self.command_palette else {
             return;
         };
-        if query == palette.committed && !palette.songs.needs_load() {
+        if query == palette.committed && !palette.found.needs_load() {
             return;
         }
         palette.serial += 1;
         palette.committed = query.clone();
         palette.highlighted = 0;
+        palette.playlists = playlists;
         if query.is_empty() {
-            palette.songs = Loadable::NotLoaded;
-        } else if palette.songs.get().is_none() {
-            palette.songs = Loadable::Loading;
+            palette.found = Loadable::NotLoaded;
+        } else if palette.found.get().is_none() {
+            palette.found = Loadable::Loading;
         }
-        self.backend.api(ApiRequest::SearchSongs {
+        self.backend.api(ApiRequest::SearchPalette {
             query,
             serial: palette.serial,
         });
+    }
+
+    /// The playlists the signed-in account owns whose names hold `query`,
+    /// in library order. Playlists made together or followed are not the
+    /// listener's own.
+    fn own_playlists_named(&self, query: &str) -> Vec<Playlist> {
+        let needle = query.trim().to_lowercase();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let Some(user) = self.user_id() else {
+            return Vec::new();
+        };
+        self.library
+            .playlists
+            .get()
+            .map(|playlists| {
+                playlists
+                    .iter()
+                    .filter(|playlist| {
+                        playlist.owned_by(user) && playlist.name.to_lowercase().contains(&needle)
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Whether the command palette is waiting for Spotify's answer.
@@ -7937,7 +7967,7 @@ impl App {
                     Err(error) => self.search_failed(&gettext(self.locale, "Playlists"), error),
                 }
             }
-            ApiResponse::SearchSongs {
+            ApiResponse::SearchPalette {
                 query,
                 serial,
                 result,
@@ -7949,8 +7979,8 @@ impl App {
                 if serial != palette.serial || query != palette.committed {
                     return;
                 }
-                palette.songs = match result {
-                    Ok(songs) => Loadable::Loaded(songs),
+                palette.found = match result {
+                    Ok(found) => Loadable::Loaded(found),
                     Err(error) => Loadable::Failed(friendly_api_error(locale, &error)),
                 };
                 palette.answered = serial;
@@ -11344,27 +11374,38 @@ impl App {
                 }
             }
             Action::CloseCommandPalette => self.command_palette = None,
-            Action::PlayCommandPaletteSong(index) => {
-                let song = self
+            Action::PlayCommandPaletteEntry(index) => {
+                let entry = self
                     .command_palette
                     .as_ref()
-                    .and_then(|palette| palette.songs.get())
-                    .and_then(|songs| songs.get(index))
-                    .cloned();
+                    .and_then(|palette| palette.entries().into_iter().nth(index));
                 self.command_palette = None;
-                let Some(track) = song else {
-                    return;
-                };
-                // The player bar shows the song at once, from this copy,
-                // while Spotify starts it.
-                if let Some(id) = util::uri_id(&track.uri) {
-                    self.remember_track_recording(&track);
-                    self.track_cache.insert(id.to_string(), track.clone());
+                match entry {
+                    Some(PaletteEntry::Song(track)) => {
+                        // The player bar shows the song at once, from this
+                        // copy, while Spotify starts it.
+                        if let Some(id) = util::uri_id(&track.uri) {
+                            self.remember_track_recording(&track);
+                            self.track_cache.insert(id.to_string(), (*track).clone());
+                        }
+                        // A palette song plays on its own, and Spotify
+                        // continues with what follows it (autoplay), as a
+                        // search result does.
+                        let request = PlayRequest::tracks(vec![track.uri]).starting_at_index(0);
+                        self.play_request(request, false);
+                    }
+                    // An artist, album or playlist plays from its start, as
+                    // its card's play button would.
+                    Some(entry) => self.apply(
+                        Action::PlayContext {
+                            uri: entry.uri().to_string(),
+                            offset_uri: None,
+                            offset_index: None,
+                        },
+                        ctx,
+                    ),
+                    None => {}
                 }
-                // A palette song plays on its own, and Spotify continues
-                // with what follows it (autoplay), as a search result does.
-                let request = PlayRequest::tracks(vec![track.uri]).starting_at_index(0);
-                self.play_request(request, false);
             }
             Action::LoadMore(page) => self.load_more(page),
             Action::LoadWindow { page, position } => self.load_window(page, position),
@@ -20197,13 +20238,61 @@ mod tests {
         }
     }
 
-    /// The command palette searches songs once typing pauses, keeps the
-    /// songs it shows until the next answer, drops an answer to an earlier
-    /// query, and plays the chosen song as it closes.
+    fn palette_found(songs: Vec<Track>) -> crate::api::models::SearchResults {
+        fn page<T>(items: Vec<T>) -> crate::api::models::Page<T> {
+            crate::api::models::Page {
+                items,
+                total: 0,
+                limit: 0,
+                offset: 0,
+                next: None,
+            }
+        }
+        crate::api::models::SearchResults {
+            tracks: Some(page(songs)),
+            artists: Some(page(vec![Artist {
+                id: "art".into(),
+                uri: "spotify:artist:art".into(),
+                name: "Rosewood Band".into(),
+                ..Artist::default()
+            }])),
+            albums: Some(page(vec![Album {
+                id: "alb".into(),
+                uri: "spotify:album:alb".into(),
+                name: "Rosewood Sessions".into(),
+                ..Album::default()
+            }])),
+            ..Default::default()
+        }
+    }
+
+    /// The command palette searches once typing pauses, lists the
+    /// listener's own matching playlists at once, keeps what it shows until
+    /// the next answer, drops an answer to an earlier query, and plays the
+    /// chosen entry as it closes.
     #[test]
     fn the_command_palette_searches_after_a_pause_and_plays_the_chosen_song() {
         let ctx = egui::Context::default();
         let mut app = test_app("command-palette");
+        app.user = Some(User {
+            id: "me".into(),
+            ..User::default()
+        });
+        let playlist = |id: &str, name: &str, owner: &str| Playlist {
+            id: id.into(),
+            uri: format!("spotify:playlist:{id}"),
+            name: name.into(),
+            owner: crate::api::models::Owner {
+                id: Some(owner.into()),
+                ..Default::default()
+            },
+            ..Playlist::default()
+        };
+        app.library.playlists = Loadable::Loaded(vec![
+            playlist("mine", "Rose garden", "me"),
+            playlist("theirs", "Roses", "friend"),
+            playlist("other", "Workout", "me"),
+        ]);
         app.apply(Action::ToggleCommandPalette, &ctx);
         let palette = app.command_palette.as_mut().expect("the palette opens");
         assert!(palette.focus_requested, "the field takes focus on opening");
@@ -20221,20 +20310,43 @@ mod tests {
         app.tick_command_palette(&ctx);
         let palette = app.command_palette.as_ref().unwrap();
         assert_eq!(palette.committed, "rose");
-        assert!(palette.songs.is_loading());
+        assert!(palette.found.is_loading());
         assert!(app.command_palette_searching());
         let first = palette.serial;
+        // The listener's own matching playlist is listed before Spotify
+        // answers; a friend's and an unrelated one are not.
+        let names: Vec<String> = palette
+            .entries()
+            .iter()
+            .map(|entry| entry.uri().to_string())
+            .collect();
+        assert_eq!(names, ["spotify:playlist:mine"]);
 
-        app.handle_api(ApiResponse::SearchSongs {
+        app.handle_api(ApiResponse::SearchPalette {
             query: "rose".into(),
             serial: first,
-            result: Ok(vec![
+            result: Ok(palette_found(vec![
                 palette_song("a", "Rosewood"),
                 palette_song("b", "Roses"),
-            ]),
+            ])),
         });
         let palette = app.command_palette.as_ref().unwrap();
-        assert_eq!(palette.songs.get().map(Vec::len), Some(2));
+        let uris: Vec<String> = palette
+            .entries()
+            .iter()
+            .map(|entry| entry.uri().to_string())
+            .collect();
+        assert_eq!(
+            uris,
+            [
+                "spotify:track:a",
+                "spotify:track:b",
+                "spotify:artist:art",
+                "spotify:album:alb",
+                "spotify:playlist:mine",
+            ],
+            "songs, artists, albums, then own playlists"
+        );
         assert!(!app.command_palette_searching());
 
         // A longer query keeps the songs on screen while Spotify answers,
@@ -20245,50 +20357,70 @@ mod tests {
         app.tick_command_palette(&ctx);
         let palette = app.command_palette.as_ref().unwrap();
         assert_eq!(
-            palette.songs.get().map(Vec::len),
-            Some(2),
-            "the list does not blink empty"
+            palette.entries().len(),
+            4,
+            "the songs, artist and album stay; the playlist no longer matches"
         );
         assert!(app.command_palette_searching());
         let second = palette.serial;
         assert_ne!(first, second);
-        app.handle_api(ApiResponse::SearchSongs {
+        app.handle_api(ApiResponse::SearchPalette {
             query: "rose".into(),
             serial: first,
-            result: Ok(vec![palette_song("stale", "Stale")]),
+            result: Ok(palette_found(vec![palette_song("stale", "Stale")])),
         });
         let palette = app.command_palette.as_ref().unwrap();
-        assert_eq!(
-            palette.songs.get().map(Vec::len),
-            Some(2),
-            "a stale answer is dropped"
-        );
-        app.handle_api(ApiResponse::SearchSongs {
+        assert_eq!(palette.entries().len(), 4, "a stale answer is dropped");
+        app.handle_api(ApiResponse::SearchPalette {
             query: "rosew".into(),
             serial: second,
-            result: Ok(vec![
+            result: Ok(palette_found(vec![
                 palette_song("a", "Rosewood"),
                 palette_song("c", "Rosewater"),
-            ]),
+            ])),
         });
         assert!(!app.command_palette_searching());
+        assert!(
+            app.command_palette.as_ref().unwrap().playlists.is_empty(),
+            "no own playlist holds the longer query"
+        );
 
         // Down moves the choice, held within the list; Enter plays it and
         // closes the palette, and the player bar shows the song at once.
         let palette = app.command_palette.as_mut().unwrap();
         palette.move_choice(1);
-        palette.move_choice(5);
-        assert_eq!(palette.highlighted, 1);
-        palette.move_choice(-3);
+        palette.move_choice(9);
+        assert_eq!(palette.highlighted, 3, "the last entry is the album");
+        palette.move_choice(-5);
         assert_eq!(palette.highlighted, 0);
         palette.move_choice(1);
         let chosen = palette.highlighted;
-        app.apply(Action::PlayCommandPaletteSong(chosen), &ctx);
+        app.apply(Action::PlayCommandPaletteEntry(chosen), &ctx);
         assert!(app.command_palette.is_none(), "playing closes the palette");
         assert_eq!(
             app.now_playing().map(|now| now.uri),
             Some("spotify:track:c".into()),
             "the chosen song is the playing song"
+        );
+
+        // An album plays as a context from its start.
+        app.apply(Action::ToggleCommandPalette, &ctx);
+        let palette = app.command_palette.as_mut().unwrap();
+        palette.query = "rose".into();
+        palette.typed_at = Some(Instant::now() - SEARCH_DEBOUNCE * 2);
+        app.tick_command_palette(&ctx);
+        let serial = app.command_palette.as_ref().unwrap().serial;
+        app.handle_api(ApiResponse::SearchPalette {
+            query: "rose".into(),
+            serial,
+            result: Ok(palette_found(vec![palette_song("a", "Rosewood")])),
+        });
+        app.apply(Action::PlayCommandPaletteEntry(2), &ctx);
+        assert!(app.command_palette.is_none());
+        assert_eq!(
+            app.playing_context_uri().as_deref(),
+            Some("spotify:album:alb"),
+            "the chosen album is the playing context"
         );
 
         // Esc closes without playing; the shortcut opens afresh.

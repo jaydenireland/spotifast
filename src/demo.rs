@@ -1321,13 +1321,23 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
             }
             "shortcuts" => app.dialog = Some(Dialog::Shortcuts),
             "command-palette" => {
-                let songs: Vec<Track> = (0..8).map(track).collect();
+                let playlists: Vec<Playlist> = (0..6)
+                    .map(playlist)
+                    .filter(|playlist| playlist.owned_by("demo"))
+                    .take(crate::model::PALETTE_PLAYLISTS)
+                    .collect();
                 app.command_palette = Some(crate::model::CommandPalette {
                     query: "Bonobo".into(),
                     committed: "Bonobo".into(),
                     serial: 1,
                     answered: 1,
-                    songs: Loadable::Loaded(songs),
+                    found: Loadable::Loaded(SearchResults {
+                        tracks: Some(self::page((0..5).map(track).collect())),
+                        artists: Some(self::page((0..2).map(artist).collect())),
+                        albums: Some(self::page((0..3).map(album).collect())),
+                        ..Default::default()
+                    }),
+                    playlists,
                     highlighted: 1,
                     ..Default::default()
                 });

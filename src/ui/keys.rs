@@ -257,7 +257,7 @@ pub fn shortcuts(locale: Locale) -> Vec<(Cow<'static, str>, Cow<'static, str>)> 
         ),
         (
             keys(PALETTE_SHORTCUT),
-            gettext(locale, "Find a song and play it"),
+            gettext(locale, "Find something and play it"),
         ),
         (
             keys(SIDEBAR_SHORTCUT),
